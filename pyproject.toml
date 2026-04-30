@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "drift_monitor"
+version = "0.1.0"
+description = "Information drift monitoring framework for production predictive AI systems (RCA)"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Neeraj Rohilla" }]
+dependencies = [
+    "numpy>=1.24",
+    "pandas>=2.0",
+    "scipy>=1.11",
+    "scikit-learn>=1.3",
+]
+
+[project.optional-dependencies]
+logs = ["drain3>=0.9"]
+dev  = ["pytest>=7.4"]
+
+[tool.setuptools.packages.find]
+include = ["drift_monitor*"]
