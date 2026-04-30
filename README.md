@@ -72,11 +72,35 @@ tests/                # Automated test suite (target: 55 checks per white paper)
 
 ## Installation
 
+### From PyPI (recommended)
+
 ```bash
-pip install -r requirements.txt
-# Optional: log template miner
-pip install drain3
+pip install drift_monitor                 # core
+pip install "drift_monitor[logs]"         # + drain3 log template miner
+pip install "drift_monitor[dev]"          # + pytest, build, twine (contributors)
 ```
+
+Requirements: Python 3.10+. Core dependencies (`numpy`, `pandas`, `scipy`,
+`scikit-learn`) are pulled in automatically.
+
+### From source
+
+```bash
+git clone https://github.com/nrohilla-fibonacci/infodrift.git
+cd infodrift
+pip install -e ".[logs,dev]"
+pytest                                    # 35 checks should pass
+```
+
+### Verify the install
+
+```bash
+python -c "import drift_monitor as dm; print(dm.__version__)"
+```
+
+For build/release tooling and the PyPI publish flow, see
+[`docs/packaging.md`](docs/packaging.md). For an end-to-end runnable
+example, see [`examples/quickstart.py`](examples/quickstart.py).
 
 ## Quick start
 

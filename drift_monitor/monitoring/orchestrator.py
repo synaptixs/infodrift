@@ -381,5 +381,6 @@ class DriftOrchestrator:
         ent = self.get_entity(entity_key)
         if not ent.history:
             return None
-        last_window = sorted(ent.history)[-1]
+        # dicts preserve insertion order; the most recent run is the last key.
+        last_window = next(reversed(ent.history))
         return ent.history[last_window]["report"]
