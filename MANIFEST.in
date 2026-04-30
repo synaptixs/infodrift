@@ -1,0 +1,13 @@
+include README.md
+include QUICKSTART.md
+include CONTRIBUTING.md
+include LICENSE
+include pyproject.toml
+include requirements.txt
+recursive-include drift_monitor *.py py.typed
+recursive-exclude tests *
+recursive-exclude examples *
+recursive-exclude docs *
+recursive-exclude .github *
+global-exclude __pycache__
+global-exclude *.pyc

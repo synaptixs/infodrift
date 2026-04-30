@@ -5,10 +5,45 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "drift_monitor"
 version = "0.1.0"
-description = "Information drift monitoring framework for production predictive AI systems (RCA)"
+description = "Information drift monitoring framework for production predictive AI systems (PSI, KL/JS, calibration, TTD, segment-aware RCA)"
 readme = "README.md"
 requires-python = ">=3.10"
+license = { file = "LICENSE" }
 authors = [{ name = "Neeraj Rohilla" }]
+maintainers = [{ name = "Neeraj Rohilla" }]
+keywords = [
+    "mlops",
+    "model-monitoring",
+    "drift-detection",
+    "concept-drift",
+    "calibration",
+    "psi",
+    "jensen-shannon",
+    "kl-divergence",
+    "log-template-mining",
+    "anomaly-detection",
+    "ml-observability",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Information Technology",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Scientific/Engineering :: Information Analysis",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: System :: Monitoring",
+    "Typing :: Typed",
+]
 dependencies = [
     "numpy>=1.24",
     "pandas>=2.0",
@@ -18,7 +53,27 @@ dependencies = [
 
 [project.optional-dependencies]
 logs = ["drain3>=0.9"]
-dev  = ["pytest>=7.4"]
+dev = [
+    "pytest>=7.4",
+    "build>=1.2",
+    "twine>=5.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/nrohilla-fibonacci/infodrift"
+Repository = "https://github.com/nrohilla-fibonacci/infodrift"
+Documentation = "https://github.com/nrohilla-fibonacci/infodrift#readme"
+"Bug Tracker" = "https://github.com/nrohilla-fibonacci/infodrift/issues"
+Changelog = "https://github.com/nrohilla-fibonacci/infodrift/releases"
 
 [tool.setuptools.packages.find]
 include = ["drift_monitor*"]
+exclude = ["tests*", "examples*", "docs*"]
+
+[tool.setuptools.package-data]
+drift_monitor = ["py.typed"]
+
+[tool.pytest.ini_options]
+minversion = "7.4"
+addopts = "-ra --strict-markers"
+testpaths = ["tests"]
