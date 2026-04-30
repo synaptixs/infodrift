@@ -134,19 +134,288 @@ alerts = orch.run(
 HealthReporter(orch).print_summary()
 ```
 
-## Metric selection cheat sheet
+## Metric selection — what each one measures, when to use it, and the formula
 
-| Metric | Best for | Caution |
-|--------|---------|---------|
-| **PSI** | Fast screening of binned drift | Binning-sensitive; 0.10/0.25 are credit-risk heuristics, not laws |
-| **KL divergence** | Directional shape diagnosis | Asymmetric, unbounded — use diagnostically, not for alerting |
-| **JS divergence** | Dashboards & alerting | Symmetric, bounded `[0, ln 2]` — preferred alert metric |
-| **Rolling z-score** | Per-feature adaptive threshold | Needs ≥ 5 (ideally 15–30) stable batches to warm up |
-| **Template frequency shift** | Logs / event mix | A shift can mean parser change, not behavior change |
-| **Brier score** | Probability calibration | Lower is better; `[0, 1]`; lags with delayed labels |
-| **ECE** | Confidence reliability | Bin-count sensitive; keep bins consistent across windows |
-| **TPR / FPR** | Anomaly detector quality | Acceptable FPR is domain-specific |
-| **Time-to-Detect** | Operational usefulness | Validity depends on trustworthy onset labels |
+The framework is layered intentionally: no single metric answers all three
+monitoring questions. Each entry below covers **what** the metric measures,
+**when** you should reach for it, the **formula** as it is implemented in
+this package, and the practical **caution** the white paper attaches to it.
+Section references map back to [`docs/MonitoringDrift.pdf`](docs/MonitoringDrift.pdf).
+
+### PSI — Population Stability Index (§3.1)
+
+**What it measures.** How much a single feature's binned distribution has
+shifted between training and production. PSI is mathematically equivalent
+to the symmetric KL divergence over a shared histogram.
+
+**When to use it.** Fast first-pass screening of every numeric and
+categorical feature. Cheap to compute and easy to interpret.
+
+**Formula.** For B bins with quantile edges fixed at training time,
+
+```
+PSI = Σ_{i=1..B} (p_curr_i - p_base_i) · ln(p_curr_i / p_base_i)
+```
+
+where `p_base_i` is the fraction of training rows in bin `i` and
+`p_curr_i` the fraction of production rows. Both are smoothed with
+Laplace ε = 1e-6 to avoid `log(0)`. Standard interpretation:
+`< 0.10` stable · `0.10–0.25` moderate · `≥ 0.25` material.
+
+**Caution.** Binning-sensitive: a multimodal shift inside an existing
+bin will not move PSI. The `0.10 / 0.25` thresholds originate in credit-
+risk modelling (Anderson, 2007) — treat them as starting heuristics and
+recalibrate against your incident history.
+
+### KL divergence — Kullback–Leibler (§3.2)
+
+**What it measures.** The expected information gain when revising
+beliefs from baseline `Q` to current `P`. Equivalently, the extra bits
+needed to encode samples from `P` using a code optimised for `Q`.
+
+**When to use it.** Diagnostic deep-dive after a JS or PSI alert —
+KL's asymmetry tells you which direction the shift went.
+
+**Formula.** Discrete:
+
+```
+KL(P || Q) = Σ_x P(x) · ln(P(x) / Q(x))
+```
+
+Continuous (via KDE):
+
+```
+KL(P || Q) = ∫ p(x) · ln(p(x) / q(x)) dx
+```
+
+**Caution.** Asymmetric (`KL(P||Q) ≠ KL(Q||P)`) and unbounded — diverges
+to ∞ on non-overlapping support. Use diagnostically, **not** as an
+alerting metric.
+
+### JS divergence — Jensen–Shannon (§3.3)
+
+**What it measures.** A symmetric, bounded version of KL built from the
+mixture distribution `M = (P + Q) / 2`. The square root `√JS` is a
+proper metric (Jensen–Shannon distance).
+
+**When to use it.** Default alerting metric for feature drift and log
+template shift. Its bounded range makes rolling thresholds stable.
+
+**Formula.**
+
+```
+M = (P + Q) / 2
+JS(P || Q) = ½ · KL(P || M)  +  ½ · KL(Q || M)
+JS ∈ [0, ln 2]   (nats)   or   [0, 1]   (bits)
+```
+
+**Caution.** Still requires baseline windows and local validation.
+Faster computation than KL, but does not replace PSI for cheap
+screening (Lin, 1991).
+
+### KDE — Kernel Density Estimation (§3.5)
+
+**What it measures.** A smoothed estimate of the continuous density
+underlying the samples — needed before computing KL/JS on a continuous
+feature, since raw histograms miss intra-bin shape changes.
+
+**When to use it.** Whenever a feature is continuous and you care about
+detecting multimodal shifts that PSI misses.
+
+**Formula.** Gaussian kernel with Scott's bandwidth (Scott, 1992):
+
+```
+ĥ(x) = (1 / n·h) · Σ_{i=1..n} K[ (x - x_i) / h ]
+K(u) = (1 / √(2π)) · exp(-u² / 2)
+h    = n^(-1/5) · σ̂          (Scott's rule, AMISE-optimal)
+```
+
+Densities are evaluated at G = 200 fixed grid points spanning
+`[min_train, max_train]` (frozen at fit time), then renormalised to a
+discrete probability vector for JS. This package additionally adds an
+out-of-grid bucket so production samples beyond the training range are
+counted as drift mass.
+
+**Caution.** Bandwidth choice trades bias against variance; Scott's
+rule is a sensible default but not optimal for heavy-tailed data.
+
+### Rolling z-score alert threshold (§3.6)
+
+**What it measures.** How unusual today's JS is, expressed in standard
+deviations of recent JS history — a self-calibrating alarm threshold.
+
+**When to use it.** Always, in front of JS-based alerting. Fixed
+thresholds on JS over-alert on naturally volatile features and miss
+shifts on stable ones.
+
+**Formula.**
+
+```
+z_t = (JS_t - µ_{t-1}) / σ_{t-1}
+µ_{t-1}, σ_{t-1} = rolling mean and std over the last W batches
+Alert when z_t > k     (defaults: W = 30, k = 3)
+```
+
+A 3-sigma threshold corresponds to ≈ 0.27 % FPR under normality, in
+line with industrial Statistical Process Control practice.
+
+**Caution.** Needs ≥ 5 stable batches to warm up; 15–30 is more
+reliable. During warm-up the framework suppresses z-score alerts —
+fall back to absolute JS thresholds for a brand-new entity.
+
+### Log template frequency shift (§3.7)
+
+**What it measures.** Whether the **mix** of system events has changed,
+even when no individual KPI has moved yet. Often precedes metric
+degradation by hours after a software rollout.
+
+**When to use it.** Anywhere logs are richer than features — telecom,
+SRE, security, industrial. Covers parser-level and behaviour-level
+change.
+
+**Formula.** After normalising raw lines to templates `t_1..t_V`:
+
+```
+p_i      = count(t_i) / Σ_j count(t_j)            (per-template frequency)
+p_new    = 1 - Σ_{i ∈ T_base} p_curr_i            (mass on unseen templates)
+JS_log   = JS(p_curr || p_base)                    (rolling z-score alerted)
+PSI_log  = Σ_i (p_curr_i - p_base_i) · ln(p_curr_i / p_base_i)
+```
+
+The appearance of new templates (`p_new > ε`) is treated as an
+**unconditional** alert regardless of the aggregate JS value.
+
+**Caution.** A template shift can mean a parser change, not a behaviour
+change — always validate the parser before attributing template drift
+to model-relevant evidence.
+
+### Brier score — calibration (§3.8)
+
+**What it measures.** The mean squared error between predicted
+probabilities and observed binary outcomes. A *proper scoring rule*: it
+is minimised in expectation only by reporting the true probability.
+
+**When to use it.** Whenever a model outputs probabilities and you have
+labels. Catches both miscalibration and irreducible uncertainty.
+
+**Formula.**
+
+```
+BS = (1/n) · Σ_{i=1..n} (ŝ_i - y_i)²       BS ∈ [0, 1]   (lower is better)
+```
+
+**Caution.** Requires ground truth. Lags when labels arrive with delay
+— pair with leading L1 indicators in delayed-label settings.
+
+### Expected Calibration Error — ECE (§3.8)
+
+**What it measures.** The average gap between predicted confidence and
+observed accuracy across probability bins — a direct test of whether a
+"0.8" really happens 80 % of the time.
+
+**When to use it.** Any system that routes work, suppresses alerts, or
+automates action based on probability thresholds.
+
+**Formula.**
+
+```
+ECE = (1/B) · Σ_{k=1..B} |frac_pos_k - mean_pred_k|
+frac_pos_k  = fraction of positives in bin k    (observed frequency)
+mean_pred_k = mean predicted probability in bin k
+```
+
+The reliability curve `frac_pos vs mean_pred` is the visual companion;
+ideal calibration sits on the 45° diagonal.
+
+**Caution.** Bin-count sensitive — keep `B` consistent across
+evaluation windows or trends become unreadable.
+
+### Per-class Precision / Recall / F1 (§3.9)
+
+**What it measures.** Class-localised classification quality. A global
+accuracy drop is hard to act on; a recall drop on one class in one
+region directly points to the affected component and failure mode.
+
+**When to use it.** Any multiclass classifier with reliable labels —
+this is the primary signal for **concept drift**.
+
+**Formula.** Treating each class `k` as one-vs-rest:
+
+```
+Precision_k = TP_k / (TP_k + FP_k)
+Recall_k    = TP_k / (TP_k + FN_k)
+F1_k        = 2 · Precision_k · Recall_k / (Precision_k + Recall_k)
+```
+
+Recall-drift alert:
+
+```
+Alert if  Recall_k(t - L)  -  Recall_k(t)  >  δ_recall
+Defaults: δ_recall = 0.20,  L = 7 batches
+```
+
+**Caution.** Labels can lag. When they do, escalate based on L1
+signals; do not let silent L2 dashboards imply model health.
+
+### TPR / FPR — anomaly detector quality (§3.10)
+
+**What it measures.** At decision threshold τ, the fraction of true
+anomalies caught (TPR) and the fraction of normals falsely flagged
+(FPR). Directly tied to alert burden vs missed-incident risk.
+
+**When to use it.** Anomaly / alerting systems where threshold tuning
+controls operator fatigue.
+
+**Formula.**
+
+```
+TPR(τ) = TP / (TP + FN)        (sensitivity)
+FPR(τ) = FP / (FP + TN)        (1 − specificity)
+AUC    = P(ŝ_+ > ŝ_-)         (ranking quality, threshold-free)
+```
+
+Choose τ to satisfy `FPR ≤ α_SLO` while maximising TPR.
+
+**Caution.** Acceptable FPR is domain-specific. Alert when FPR exceeds
+your SLO budget — high FPR causes alert fatigue and silently degrades
+operator trust.
+
+### Time-to-Detect — TTD (§3.11)
+
+**What it measures.** How long after an incident's true onset the
+detector actually fires, summarised at p50 / p90 / p99. Operational
+usefulness, not statistical quality.
+
+**When to use it.** Always when you have onset labels — TTD growth is
+the main signal that is invisible to accuracy metrics.
+
+**Formula.**
+
+```
+TTD_i  = max(alert_time_i − onset_time_i, 0)        (per incident, seconds)
+TTD_50 = median(TTD_i)
+TTD_90 = 90th percentile
+TTD_99 = 99th percentile
+Alert if TTD_50 > τ_SLO       (default τ_SLO = 300 s)
+```
+
+**Caution.** Validity depends on trustworthy onset definitions. A
+detector that fires after the incident window has effectively closed
+can still score well retrospectively yet fail operationally.
+
+### Quick reference table
+
+| Metric | Question | Range | Higher = | Direct alert? |
+|---|---|---|---|---|
+| PSI | Has the binned distribution shifted? | `[0, ∞)` | more drift | yes (thresholded) |
+| KL | How much info changed, directional? | `[0, ∞)` | more drift | no (diagnostic) |
+| JS | How much info changed, symmetric? | `[0, ln 2]` | more drift | yes (rolling z-score) |
+| Template freq shift | Has the event mix changed? | JS scale | more drift | yes (z-score + new-template) |
+| Brier | How calibrated are probabilities? | `[0, 1]` | worse | yes (thresholded) |
+| ECE | Do confidences match frequencies? | `[0, 1]` | worse | yes (thresholded) |
+| Per-class recall | Are we catching this class? | `[0, 1]` | better | yes (drop-vs-lookback) |
+| TPR / FPR | Detector sensitivity vs noise | `[0, 1]` | TPR ↑ better, FPR ↓ better | yes (FPR thresholded) |
+| TTD percentiles | How fast do alerts arrive? | `[0, ∞)` seconds | worse | yes (p50 thresholded) |
 
 ## The composited decision surface
 
